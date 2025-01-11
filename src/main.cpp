@@ -3,12 +3,17 @@
 #include <PubSubClient.h>
 #include "config.h"
 
-// MQTT Parameters
-const char *mqtt_server = "192.168.1.127";
-const unsigned int mqtt_port = 1883;
+void mqttCallback(char *topic, byte *payload, unsigned int length);
 
 #define HALL_SENSOR_PIN 0
 #define LED_PIN 2
+
+// Wi-Fi credentials
+// in config.h
+
+// MQTT broker information
+const char *mqttServer = "80.102.7.215";
+const int mqttPort = 1883;
 
 unsigned int player_id = 1;
 String client_ID = "Meeple-" + String(player_id);
@@ -18,178 +23,93 @@ String meeple_hall_topic = "meeple/" + String(player_id) + "/hall_sensor";
 String meeple_led_topic = "meeple/" + String(player_id) + "/led";
 String meeple_debug_topic = "meeple/" + String(player_id) + "/debug";
 
-// WiFi and MQTT Client
 WiFiClient espClient;
 PubSubClient client(espClient);
 
-// Functions
-void connectToWiFi();
-void reconnectToMQTT();
-void mqttCallback(char *topic, byte *payload, unsigned int length);
-void checkHallSensor();
-void debugLog(String message, bool newLine = true);
-void handleLedMessage(String topic, String payload);
+// Hall sensor pin and movement logic variables
+bool isAboveMagnet = false;
 
-// Hall Sensor Parameters
-const unsigned long hallSensorDebounceDelay = 100; // Debounce delay in ms
-unsigned long lastHallChangeTime = 0;              // Last time the state changed
-int previousHallState = HIGH;                      // Initial state (no magnet detected)
-
-void setup()
-{
-  Serial.begin(115200);
-  pinMode(LED_PIN, OUTPUT);
-  pinMode(HALL_SENSOR_PIN, INPUT);
-
-  connectToWiFi();
-
-  // Set up MQTT
-  client.setServer(mqtt_server, mqtt_port);
-  client.setCallback(mqttCallback);
-}
-
-void loop()
-{
-  // Check if Wi-Fi is disconnected
-  if (WiFi.status() != WL_CONNECTED)
-  {
-    debugLog("Wi-Fi disconnected! Current status: " + String(WiFi.status()));
-    debugLog("Reconnecting to Wi-Fi...");
-    connectToWiFi();
-  }
-
-  // Only try to reconnect if we're actually disconnected
-  if (!client.connected())
-  {
-    debugLog("MQTT disconnected! Current state: " + String(client.state()));
-    debugLog("Reconnecting to MQTT...");
-    reconnectToMQTT();
-  }
-
-  // Handle MQTT messages
-  client.loop();
-
-  // Check hall sensor state
-  checkHallSensor();
-
-  // Small delay to prevent too frequent checking
-  delay(100);
-}
-
-// Connect to Wi-Fi
-void connectToWiFi()
-{
-  Serial.print("Connecting to WiFi ..");
+void connectToWiFi() {
+  Serial.print("Connecting to Wi-Fi");
   WiFi.begin(ssid, password);
 
-  unsigned long startAttemptTime = millis();
-  const unsigned long wifiTimeout = 10000;
-
-  while (WiFi.status() != WL_CONNECTED && millis() - startAttemptTime < wifiTimeout)
-  {
-    Serial.print('.');
-    delay(1000);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
   }
-
-  debugLog("\nConnected to Wi-Fi");
+  Serial.println("\nWi-Fi connected");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+  digitalWrite(LED_PIN, HIGH);
+  delay(1000);
+  digitalWrite(LED_PIN, LOW);
 }
 
-// Reconnect to MQTT
-void reconnectToMQTT()
-{
-  if (!client.connected())
-  { // Add this check
-    debugLog("Connecting to MQTT...", false);
-    if (client.connect(client_ID.c_str()))
-    {
-      debugLog("Connected");
+void connectToMQTT() {
+  while (!client.connected()) {
+    Serial.println("Connecting to MQTT...");
+    if (client.connect(client_ID.c_str())) {
+      Serial.println("Connected to MQTT");
+      client.publish(meeple_debug_topic.c_str(), "Connected!");
       client.subscribe(meeple_led_topic.c_str());
     }
-    else
-    {
-      debugLog("Failed, rc=" + String(client.state()) + " Trying again in 5 seconds...");
-      delay(5000);
+    else {
+      Serial.print("Failed to connect. State: ");
+      Serial.println(client.state());
+      delay(2000);
     }
   }
 }
 
-// Handle MQTT Messages
-void mqttCallback(char *topic, byte *payload, unsigned int length)
-{
-  // Convert payload to String
-  String payloadStr = "";
-  for (unsigned int i = 0; i < length; i++)
-  {
-    payloadStr += (char)payload[i];
-  }
+void setup() {
+  Serial.begin(115200);
+  pinMode(HALL_SENSOR_PIN, INPUT);
+  pinMode(LED_PIN, OUTPUT);
 
-  String topicStr = String(topic);
-
-  // Debug message
-  debugLog("Message arrived on topic: " + String(topic) + ". Message: " + payloadStr);
-
-  // Check topic
-  if (topicStr.equals(meeple_led_topic))
-    handleLedMessage(topicStr, payloadStr);
-  else
-    debugLog("Unknown topic: " + topicStr);
+  connectToWiFi();
+  client.setServer(mqttServer, mqttPort);
+  client.setCallback(mqttCallback);
+  connectToMQTT();
 }
 
-void handleLedMessage(String topic, String payload)
-{
-  // Only accept "0" or "1" as valid inputs
-  if (payload != "0" && payload != "1")
-  {
-    debugLog("Invalid LED state: " + payload);
-    return;
+void loop() {
+  if (!client.connected()) {
+    connectToMQTT();
+  }
+  client.loop();
+
+  // Read the hall sensor value
+  bool currentAboveMagnet = digitalRead(HALL_SENSOR_PIN);
+
+  // Check if the player moved from one magnet to another
+  if (currentAboveMagnet != isAboveMagnet) {
+    if (currentAboveMagnet) {
+      Serial.println("Has moved");
+      client.publish(meeple_hall_topic.c_str(), "1");
+    }
+    isAboveMagnet = currentAboveMagnet;
   }
 
-  // Convert payload to int (now safe since we validated the input)
-  int ledState = atoi(payload.c_str());
-  digitalWrite(LED_PIN, ledState);
-  debugLog("LED state set to: " + String(ledState));
+  delay(500);  // Add delay to debounce
 }
 
-// Check Hall Sensor
-void checkHallSensor()
-{
-  int currentHallState = digitalRead(HALL_SENSOR_PIN);
-  debugLog("Hall sensor state: " + String(currentHallState));
 
-  // Check if the state has changed
-  if (currentHallState != previousHallState)
-  {
-    unsigned long currentTime = millis();
+void mqttCallback(char *topic, byte *payload, unsigned int length) {
+  Serial.print("Message arrived in topic: ");
+  Serial.println(topic);
 
-    // Debounce: Only act if enough time has passed since the last change
-    if (currentTime - lastHallChangeTime > hallSensorDebounceDelay)
-    {
-      lastHallChangeTime = currentTime;
+  Serial.print("Message:");
+  for (int i = 0; i < length; i++) {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
 
-      if (currentHallState == LOW)
-      {
-        debugLog("Magnet detected: Meeple has moved to a new position");
-        client.publish(meeple_hall_topic.c_str(), "1"); // Notify movement
-      }
-      else if (currentHallState == HIGH)
-      {
-        debugLog("No magnet detected: Meeple is in transit");
-        client.publish(meeple_hall_topic.c_str(), "0"); // Optional, notify leaving position
-      }
-
-      // Update the previous state
-      previousHallState = currentHallState;
+  if (String(topic) == meeple_led_topic) {
+    if ((char)payload[0] == '1') {
+      digitalWrite(LED_PIN, HIGH);
+    }
+    else {
+      digitalWrite(LED_PIN, LOW);
     }
   }
-}
-
-void debugLog(String message, bool newLine)
-{
-  if (newLine)
-    Serial.println(message);
-  else
-    Serial.print(message);
-
-  if (client.connected())
-    client.publish(meeple_debug_topic.c_str(), message.c_str());
 }
