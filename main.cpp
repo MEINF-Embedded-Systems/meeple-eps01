@@ -18,9 +18,6 @@ const int mqttPort = 1883;
 unsigned int player_id = 1;
 String client_ID = "Meeple-" + String(player_id);
 
-bool previousState = LOW;  // Tracks the previous state of the sensor
-bool currentState = LOW;   // Tracks the current state of the sensor
-
 // MQTT Topics
 String meeple_hall_topic = "meeple/" + String(player_id) + "/hall_sensor";
 String meeple_led_topic = "meeple/" + String(player_id) + "/led";
@@ -30,12 +27,7 @@ WiFiClient espClient;
 PubSubClient client(espClient);
 
 // Hall sensor pin and movement logic variables
-// bool isAboveMagnet = false;
-
-// Transition flags
-bool first_high = false;
-bool second_low = false;
-bool third_high = false;
+bool isAboveMagnet = false;
 
 void connectToWiFi() {
   Serial.print("Connecting to Wi-Fi");
@@ -87,32 +79,18 @@ void loop() {
   client.loop();
 
   // Read the hall sensor value
-  currentState = digitalRead(HALL_SENSOR_PIN);
+  bool currentAboveMagnet = digitalRead(HALL_SENSOR_PIN);
 
   // Check if the player moved from one magnet to another
-  if (previousState == LOW && currentState == HIGH) {
-    first_high = true;
-    client.publish(meeple_debug_topic.c_str(), "First high");
-  }
-  if (first_high && previousState == HIGH && currentState == LOW) {
-    second_low = true;
-    client.publish(meeple_debug_topic.c_str(), "Second low");
-  }
-  if (second_low && previousState == LOW && currentState == HIGH) {
-    third_high = true;
-    client.publish(meeple_debug_topic.c_str(), "Third high");
+  if (currentAboveMagnet != isAboveMagnet) {
+    if (currentAboveMagnet) {
+      Serial.println("Has moved");
+      client.publish(meeple_hall_topic.c_str(), "1");
+    }
+    isAboveMagnet = currentAboveMagnet;
   }
 
-  if (third_high) {
-    client.publish(meeple_debug_topic.c_str(), "Has moved");
-    first_high = false;
-    second_low = false;
-    third_high = false;
-  }
-
-  previousState = currentState;
-
-  delay(10);  // Add delay to debounce
+  delay(500);  // Add delay to debounce
 }
 
 
